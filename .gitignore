@@ -1,0 +1,15 @@
+# Non vogliamo asset o roba Unity qui
+*.meta
+*.unity
+*.prefab
+*.mat
+*.anim
+*.controller
+*.png
+*.jpg
+*.psd
+*.wav
+Library/
+Temp/
+Obj/
+Logs/
