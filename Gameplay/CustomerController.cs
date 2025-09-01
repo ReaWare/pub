@@ -5,33 +5,45 @@ using UnityEngine;
 [RequireComponent(typeof(Rigidbody2D))]
 public class CustomerController : MonoBehaviour
 {
+    [Header("Setup")]
     public CustomerArchetype archetype;
     public Transform entryPoint;
     public Transform exitPoint;
     public Transform[] stands;
     public Transform cashierPoint; // punto davanti alla cassa (sul trigger)
+
+    [Header("Movimento")]
     public float stopDistance = 0.05f;
-    public float standJitter = 0.12f;   // caos davanti agli stand
+    public float standJitter = 0.12f;                 // caos davanti agli stand
     public Vector2 cashierJitter = new Vector2(0.12f, 0.06f); // coda in cassa
-    private CashRegister myRegister;
-    float speedMul = 1f;
-    public bool IsThief { get; private set; }
-    private int _stolenCount = 0;          // persiste tra uno stand e l’altro
-    private bool _warnedNoProvider = false;
 
-
-
-
-
+    [Header("Runtime")]
     public List<Item> Cart = new List<Item>();
     public bool WantsToPay { get; private set; }
+    public bool IsThief { get; private set; }
 
-    Rigidbody2D rb;
+    private CashRegister myRegister;
+    private Rigidbody2D rb;
+    private float speedMul = 1f;
+    private int _stolenCount = 0;          // persiste tra uno stand e l’altro
+    private bool _warnedNoProvider = false;
+    private Coroutine moveRoutine;
 
-    void Awake() { rb = GetComponent<Rigidbody2D>(); rb.bodyType = RigidbodyType2D.Kinematic; }
+    void Awake()
+    {
+        rb = GetComponent<Rigidbody2D>();
+        rb.bodyType = RigidbodyType2D.Kinematic;
+    }
 
     IEnumerator Start()
     {
+        // Limite globale: se oltre quota/concorrenza, autodistruggiti
+        if (CustomerLimiter.I != null && !CustomerLimiter.I.TryAdmit(this))
+        {
+            Destroy(gameObject);
+            yield break;
+        }
+
         // entra
         if (entryPoint) transform.position = entryPoint.position;
 
@@ -66,68 +78,90 @@ public class CustomerController : MonoBehaviour
             if (item && Random.value <= archetype.buyChance)
                 Cart.Add(item);
         }
+
         // --- KLEPTO: decide di rubare? ---
-        if (Cart.Count > 0 && Random.value < archetype.stealChance)
+        if (Cart.Count > 0 && archetype != null && Random.value < archetype.stealChance)
         {
             IsThief = true;
             speedMul = Mathf.Max(1f, archetype.thiefRunMultiplier);
 
-            int toSteal = Mathf.Clamp(Random.Range(archetype.stealItems.x, archetype.stealItems.y + 1), 1, Cart.Count);
-            int loss = 0;
-            for (int i = 0; i < toSteal; i++) loss += Cart[i].price;
+            int maxSteal = Mathf.Clamp(archetype.stealItems.y, 0, Cart.Count);
+            int minSteal = Mathf.Clamp(archetype.stealItems.x, 0, maxSteal);
+            int toSteal = Mathf.Clamp(Random.Range(minSteal, maxSteal + 1), 0, Cart.Count);
 
-            Wallet.I.Add(-loss);
-            PopupFloatingText.I?.ShowLoss(loss, transform.position);
+            int loss = 0, picked = 0;
+            for (int i = 0; i < Cart.Count && picked < toSteal; i++)
+            {
+                var it = Cart[i];
+                if (!it) continue; // evita NRE se l'Item è stato distrutto
+                loss += it.price;
+                picked++;
+            }
 
-            // scappa subito
+            if (loss > 0)
+            {
+                Wallet.I.Add(-loss);
+                PopupFloatingText.I?.ShowLoss(loss, transform.position);
+            }
+
             yield return Exit();
-            yield break;
+            yield break; // chiudi la coroutine qui
         }
 
-
-        if (Cart.Count > 0 && Random.value <= 0.9f)
+        // --- PAGA O ESCI ---
+        if (Cart.Count > 0)
         {
             WantsToPay = true;
             var reg = cashierPoint ? cashierPoint.GetComponentInParent<CashRegister>() : null;
             if (reg != null)
             {
-                myRegister = reg;          // <— salva la cassa
+                myRegister = reg;          // salva la cassa
                 reg.JoinQueue(this);
+                yield break;               // attendi la coda; fine coroutine
             }
-            else
+            else if (cashierPoint != null)
             {
-                // fallback...
+                // fallback: avvicinati alla zona cassa
                 Vector3 paySpot = cashierPoint.position + new Vector3(
                     Random.Range(-cashierJitter.x, cashierJitter.x),
                     Random.Range(-cashierJitter.y, cashierJitter.y), 0f);
                 yield return MoveTo(paySpot);
+                yield break;
             }
         }
-        else { yield return Exit(); }
 
+        // nessun carrello o niente cassa → esci
+        yield return Exit();
+        yield break;
     }
 
     public void ClearCartAndExit()
     {
-        // se ero in coda, esci dalla coda
+        // esci dalla coda se agganciato
         if (myRegister != null) myRegister.LeaveQueue(this);
+
+        WantsToPay = false;
         Cart.Clear();
+
+        // diventa "fantasma" per non incastrarsi con colliders
+        SetGhostMode(true);
+
         StartCoroutine(Exit());
     }
 
     IEnumerator Exit()
     {
-        WantsToPay = false;
-        if (exitPoint) yield return MoveTo(exitPoint.position);
+        const float TIMEOUT = 6f;
+        if (exitPoint)
+            yield return MoveToWithTimeout(exitPoint.position, TIMEOUT);
+
         Destroy(gameObject);
     }
-
 
     IEnumerator MoveTo(Vector3 target)
     {
         var wait = new WaitForFixedUpdate();
         float stopSqr = stopDistance * stopDistance;
-
 
         while (true)
         {
@@ -145,8 +179,6 @@ public class CustomerController : MonoBehaviour
             yield return wait; // muoviti a cadenza fisica
         }
     }
-
-
 
     void MaybeStealAtStand(Transform standPoint)
     {
@@ -186,18 +218,47 @@ public class CustomerController : MonoBehaviour
         }
     }
 
+    void SetGhostMode(bool on)
+    {
+        var cols = GetComponentsInChildren<Collider2D>();
+        for (int i = 0; i < cols.Length; i++)
+            cols[i].isTrigger = on;
+    }
 
+    IEnumerator MoveToWithTimeout(Vector3 target, float timeoutSeconds)
+    {
+        var wait = new WaitForFixedUpdate();
+        float stopSqr = stopDistance * stopDistance;
+        float deadline = Time.time + Mathf.Max(0.1f, timeoutSeconds);
 
+        while (true)
+        {
+            Vector2 cur = rb ? rb.position : (Vector2)transform.position;
+            Vector2 to = (Vector2)target - cur;
+            if (to.sqrMagnitude <= stopSqr) break;
+            if (Time.time >= deadline) break;  // failsafe
 
+            Vector2 dir = to.normalized;
+            float step = Mathf.Abs(archetype.walkSpeed * speedMul) * Time.fixedDeltaTime;
 
+            if (rb) rb.MovePosition(cur + dir * step);
+            else transform.position = cur + dir * step;
 
-    Coroutine moveRoutine;
+            yield return wait;
+        }
+    }
+
     public void Queue_MoveTo(Vector3 pos)
     {
         if (moveRoutine != null) StopCoroutine(moveRoutine);
         moveRoutine = StartCoroutine(MoveTo(pos));
     }
 
+    void OnDestroy()
+    {
+        if (CustomerLimiter.I != null)
+            CustomerLimiter.I.NotifyDestroyed(this);
+    }
 
     void Log(string m) => Debug.Log($"[Customer:{name}] {m}");
 }

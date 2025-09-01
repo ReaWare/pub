@@ -1,128 +1,170 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using UnityEngine;
 
+[RequireComponent(typeof(Collider2D))]
 public class CashRegister : MonoBehaviour
 {
     [Header("Input")]
-    public KeyCode interactKey = KeyCode.E;
+    [Tooltip("Tasto per incassare (letto dal Player, non qui)")]
+    public KeyCode interactKey = KeyCode.E; // lasciato per reference, l'input è centralizzato nel Player
+    int _lastCheckoutFrame = -1;
+    float _lastSfxTime = -1f;
 
-    [Header("Queue")]
+    [Header("Prossimità")]
+    [Tooltip("Incassa solo se il Player è dentro il trigger della cassa")]
+    public bool requireProximity = true;
+    [Tooltip("Tag del Player che deve entrare nel trigger")]
+    public string playerTag = "Player";
+    bool _playerInRange;
+
+    [Header("Coda")]
     [Tooltip("Slot 0 = davanti alla cassa (dentro il trigger)")]
     public Transform[] queueSlots;     // Slot0, Slot1, Slot2...
-    public Transform cashierPoint;     // opzionale; se assente uso queueSlots[0]
+    [Tooltip("Se vuoto usa queueSlots[0] (opzionale)")]
+    public Transform cashierPoint;
 
     [Header("Audio")]
     [SerializeField] AudioSource audioSrc;
     [SerializeField] AudioClip sfxDing;    // ka-ching
-    [SerializeField] AudioClip sfxError;   // blip se premi E ma nessuno � pronto
+    [SerializeField] AudioClip sfxError;   // blip se premi E ma nessuno è pronto
+    [SerializeField] float sfxMinInterval = 0.12f; // antispam suoni
 
     readonly List<CustomerController> queue = new List<CustomerController>();
+
+    void Reset()
+    {
+        var col = GetComponent<Collider2D>();
+        col.isTrigger = true;
+    }
 
     void Awake()
     {
         if (!audioSrc) audioSrc = GetComponent<AudioSource>();
+        if (!cashierPoint && queueSlots != null && queueSlots.Length > 0)
+            cashierPoint = queueSlots[0];
     }
 
-    // --- API per i clienti ---
+    // ⛔️ NIENTE Update: l'input (E) lo gestisce il Player e chiama TryCheckout()
+
+    // --- Trigger 2D per prossimità Player ---
+    void OnTriggerEnter2D(Collider2D other)
+    {
+        if (!requireProximity) return;
+        if (other.CompareTag(playerTag))
+            _playerInRange = true;
+    }
+
+    void OnTriggerExit2D(Collider2D other)
+    {
+        if (!requireProximity) return;
+        if (other.CompareTag(playerTag))
+            _playerInRange = false;
+    }
+
+    // --- API chiamate dai clienti ---
     public void JoinQueue(CustomerController c)
     {
-        if (c == null || queue.Contains(c)) return;
+        if (!c || queue.Contains(c)) return;
         queue.Add(c);
-        UpdateQueueTargets();
+        RepositionQueue();
     }
 
     public void LeaveQueue(CustomerController c)
     {
-        int i = queue.IndexOf(c);
-        if (i >= 0)
-        {
-            queue.RemoveAt(i);
-            UpdateQueueTargets();
-        }
+        if (!c) return;
+        if (queue.Remove(c))
+            RepositionQueue();
     }
 
-    void Update()
+    void RepositionQueue()
     {
-        if (queue.Count == 0) return;
+        if (queueSlots == null || queueSlots.Length == 0) return;
 
-        // pulizia
-        queue.RemoveAll(c => c == null);
-
-        // candidato: il primo valido (WantsToPay + carrello)
-        CustomerController candidate = null;
-        foreach (var c in queue)
-        {
-            if (c != null && c.WantsToPay && c.Cart != null && c.Cart.Count > 0)
-            { candidate = c; break; }
-        }
-
-        if (Input.GetKeyDown(interactKey))
-        {
-            if (candidate != null)
-            {
-                int total = 0;
-                foreach (var it in candidate.Cart) total += it.price;
-
-                Wallet.I.Add(total);
-                if (audioSrc && sfxDing) audioSrc.PlayOneShot(sfxDing);
-
-                candidate.ClearCartAndExit();
-                queue.Remove(candidate);
-                UpdateQueueTargets();
-                Debug.Log($"[Register] �{total} incassati | Daily={Wallet.I.DailyTotal} | Balance={Wallet.I.Balance}");
-            }
-            else
-            {
-                if (audioSrc && sfxError) audioSrc.PlayOneShot(sfxError);
-            }
-        }
-    }
-
-    void UpdateQueueTargets()
-    {
         for (int i = 0; i < queue.Count; i++)
         {
             var c = queue[i];
-            if (c == null) continue;
-            c.Queue_MoveTo(GetSlotPosition(i));
-        }
-        UpdateIndicators();
-    }
+            if (!c) continue;
 
-    Vector3 GetSlotPosition(int index)
-    {
-        if (queueSlots != null && queueSlots.Length > 0)
-        {
-            int clamped = Mathf.Clamp(index, 0, queueSlots.Length - 1);
-            var tr = queueSlots[clamped];
-            if (tr) return tr.position;
-        }
-        Vector3 basePos = cashierPoint ? cashierPoint.position : transform.position;
-        return basePos + new Vector3(0f, -0.35f * index, 0f); // fallback a scaletta
-    }
-
-    void UpdateIndicators()
-    {
-        if (queueSlots == null) return;
-        for (int i = 0; i < queueSlots.Length; i++)
-        {
-            var slot = queueSlots[i];
+            var slot = i < queueSlots.Length ? queueSlots[i] : queueSlots[queueSlots.Length - 1];
             if (!slot) continue;
-            var ind = slot.GetComponentInChildren<SlotIndicator>();
-            if (ind) ind.SetOccupied(i < queue.Count);
+
+            Vector2 j = c.cashierJitter;
+            Vector3 pos = slot.position + new Vector3(
+                Random.Range(-j.x, j.x),
+                Random.Range(-j.y, j.y),
+                0f
+            );
+
+            c.Queue_MoveTo(pos);
         }
     }
 
-#if UNITY_EDITOR
-    void OnDrawGizmosSelected()
+    // --- Logica incasso centralizzata ---
+    public bool TryCheckout()
     {
-        if (queueSlots == null) return;
-        for (int i = 0; i < queueSlots.Length; i++)
+        if (requireProximity && !_playerInRange) return false;
+
+
+        // evita doppia esecuzione nello stesso frame
+        if (_lastCheckoutFrame == Time.frameCount) return false;
+        _lastCheckoutFrame = Time.frameCount;
+
+        // Nessuno pronto → beep singolo e basta
+        if (!HasReadyCustomer())
         {
-            if (!queueSlots[i]) continue;
-            Gizmos.color = (i == 0) ? Color.green : new Color(1f, 0.9f, 0.1f, 1f);
-            Gizmos.DrawWireSphere(queueSlots[i].position, 0.12f);
+            BeepError();
+            return false;
         }
+
+        var c = queue[0];
+        int total = GetCartTotal(c);
+        if (total <= 0) { BeepError(); return false; }
+
+        // 💰 incasso
+        Wallet.I.Add(total);
+
+        // 🔔 feedback (ding singolo, con antispam)
+        PlayDing();
+
+        // Uscita cliente (gestisce la coda)
+        c.ClearCartAndExit();
+        return true;
     }
-#endif
+
+    public bool HasReadyCustomer()
+    {
+        if (queue.Count == 0) return false;
+        var c = queue[0];
+        if (c == null) return false;
+        if (!c.WantsToPay) return false;
+        return GetCartTotal(c) > 0;
+    }
+
+    int GetCartTotal(CustomerController c)
+    {
+        if (c == null || c.Cart == null) return 0;
+        int sum = 0;
+        for (int i = 0; i < c.Cart.Count; i++)
+        {
+            var item = c.Cart[i];
+            if (item != null) sum += item.price;   // coerente con CustomerController (usa int price)
+        }
+        return sum;
+    }
+
+    void PlayDing()
+    {
+        if (!audioSrc || !sfxDing) return;
+        if (Time.time - _lastSfxTime < sfxMinInterval) return;
+        _lastSfxTime = Time.time;
+        audioSrc.PlayOneShot(sfxDing);
+    }
+
+    void BeepError()
+    {
+        if (!audioSrc || !sfxError) return;
+        if (Time.time - _lastSfxTime < sfxMinInterval) return; // antispam
+        _lastSfxTime = Time.time;
+        audioSrc.PlayOneShot(sfxError);
+    }
 }

@@ -24,6 +24,12 @@ public class DayCycle : MonoBehaviour
 
     [SerializeField] private bool startOnAwake = false; // lascia OFF, parte il GameFlow
 
+
+
+
+
+
+
     void Start()
     {
         if (startOnAwake) StartDay();
@@ -38,8 +44,14 @@ public class DayCycle : MonoBehaviour
         _endRequested = false;
         if (Wallet.I) Wallet.I.ResetDay();
         Debug.Log("[DayCycle] StartDay");
+
+#if UNITY_EDITOR
+    DebugListOnDayStartedSubscribers();  // 👈 stampa CHI ascolta
+#endif
+
         OnDayStarted?.Invoke();
     }
+
 
     void Update()
     {
@@ -97,4 +109,28 @@ public class DayCycle : MonoBehaviour
         Debug.Log($"[DayCycle] EndDay success={success}");
         OnDayEnded?.Invoke(success);
     }
+
+
+
+#if UNITY_EDITOR
+void DebugListOnDayStartedSubscribers()
+{
+    if (OnDayStarted == null)
+    {
+        Debug.Log("[DayCycle] OnDayStarted: nessun subscriber");
+        return;
+    }
+    foreach (var d in OnDayStarted.GetInvocationList())
+    {
+        var targetObj = d.Target as UnityEngine.Object; // può essere null se metodo static
+        string targetName = targetObj ? targetObj.name : "(static/no Unity obj)";
+        Debug.Log($"[DayCycle] OnDayStarted → {d.Method.DeclaringType.Name}.{d.Method.Name} @ {targetName}", targetObj);
+    }
+}
+#endif
+
+
+
+
+
 }
