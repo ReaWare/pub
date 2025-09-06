@@ -25,14 +25,20 @@ public class CustomerController : MonoBehaviour
     private CashRegister myRegister;
     private Rigidbody2D rb;
     private float speedMul = 1f;
-    private int _stolenCount = 0;          // persiste tra uno stand e l’altro
+    private int _stolenCount = 0;
     private bool _warnedNoProvider = false;
     private Coroutine moveRoutine;
+    private bool isExiting = false;
+    public bool IsExiting => isExiting; // usato dalla cassa per filtrare
+
+
 
     void Awake()
     {
         rb = GetComponent<Rigidbody2D>();
         rb.bodyType = RigidbodyType2D.Kinematic;
+        rb.useFullKinematicContacts = true; // contatti anche da kinematic
+        rb.freezeRotation = true;           // niente rotazioni
     }
 
     IEnumerator Start()
@@ -48,12 +54,17 @@ public class CustomerController : MonoBehaviour
         if (entryPoint) transform.position = entryPoint.position;
 
         // visita N stand
-        int n = Mathf.Clamp(
-            Random.Range(archetype.standsToVisit.x, archetype.standsToVisit.y + 1),
-            0, Mathf.Max(1, stands.Length)
-        );
+        int totalStands = (stands != null) ? stands.Length : 0;
+        int n = 0;
+        if (totalStands > 0)
+        {
+            n = Mathf.Clamp(
+                Random.Range(archetype.standsToVisit.x, archetype.standsToVisit.y + 1),
+                0, Mathf.Max(1, totalStands)
+            );
+        }
 
-        List<Transform> pool = new List<Transform>(stands);
+        List<Transform> pool = new List<Transform>(stands ?? System.Array.Empty<Transform>());
         for (int i = 0; i < n; i++)
         {
             Transform target;
@@ -69,13 +80,16 @@ public class CustomerController : MonoBehaviour
                 pool.RemoveAt(idx);
             }
 
+            // muoviti verso lo stand con un po' di jitter
             Vector3 spot = target.position + (Vector3)(Random.insideUnitCircle * standJitter);
             yield return MoveTo(spot);
             yield return new WaitForSeconds(0.4f);
 
-            // chance di prendere un item dal punto visitato
+            // chance di prendere un item dal punto visitato (con cleanliness + stato scaffale)
             var item = target.GetComponentInParent<Item>() ?? target.GetComponentInChildren<Item>();
-            if (item && Random.value <= archetype.buyChance)
+            bool buy = DecidePurchase(archetype.buyChance, target);
+
+            if (buy && item)
                 Cart.Add(item);
         }
 
@@ -93,7 +107,7 @@ public class CustomerController : MonoBehaviour
             for (int i = 0; i < Cart.Count && picked < toSteal; i++)
             {
                 var it = Cart[i];
-                if (!it) continue; // evita NRE se l'Item è stato distrutto
+                if (!it) continue;
                 loss += it.price;
                 picked++;
             }
@@ -105,19 +119,21 @@ public class CustomerController : MonoBehaviour
             }
 
             yield return Exit();
-            yield break; // chiudi la coroutine qui
+            yield break;
         }
 
         // --- PAGA O ESCI ---
         if (Cart.Count > 0)
         {
             WantsToPay = true;
+            
             var reg = cashierPoint ? cashierPoint.GetComponentInParent<CashRegister>() : null;
             if (reg != null)
             {
-                myRegister = reg;          // salva la cassa
-                reg.JoinQueue(this);
-                yield break;               // attendi la coda; fine coroutine
+                myRegister = reg;
+                reg.JoinQueue(this); 
+                Debug.Log($"[Customer] {name} wants to pay. Cart={Cart.Count} -> join {reg?.name}");
+                yield break; // ora la coda gestisce i movimenti
             }
             else if (cashierPoint != null)
             {
@@ -132,31 +148,39 @@ public class CustomerController : MonoBehaviour
 
         // nessun carrello o niente cassa → esci
         yield return Exit();
-        yield break;
     }
 
     public void ClearCartAndExit()
     {
-        // esci dalla coda se agganciato
+        Debug.Log($"[Customer] ClearCartAndExit START -> {name}");
+
         if (myRegister != null) myRegister.LeaveQueue(this);
 
         WantsToPay = false;
         Cart.Clear();
 
-        // diventa "fantasma" per non incastrarsi con colliders
+        isExiting = true;                        // (se hai aggiunto il flag come ti avevo proposto)
+        if (moveRoutine != null) { StopCoroutine(moveRoutine); moveRoutine = null; }
+
         SetGhostMode(true);
 
         StartCoroutine(Exit());
     }
 
+
+
     IEnumerator Exit()
     {
+        Debug.Log($"[Customer] Exit START -> {name}");
+
         const float TIMEOUT = 6f;
         if (exitPoint)
             yield return MoveToWithTimeout(exitPoint.position, TIMEOUT);
 
+        Debug.Log($"[Customer] Exit DONE -> {name}");
         Destroy(gameObject);
     }
+
 
     IEnumerator MoveTo(Vector3 target)
     {
@@ -167,8 +191,7 @@ public class CustomerController : MonoBehaviour
         {
             Vector2 cur = rb ? rb.position : (Vector2)transform.position;
             Vector2 to = (Vector2)target - cur;
-            float d2 = to.sqrMagnitude;
-            if (d2 <= stopSqr) break;
+            if (to.sqrMagnitude <= stopSqr) break;
 
             Vector2 dir = to.normalized;
             float step = Mathf.Abs(archetype.walkSpeed * speedMul) * Time.fixedDeltaTime;
@@ -176,7 +199,7 @@ public class CustomerController : MonoBehaviour
             if (rb) rb.MovePosition(cur + dir * step);
             else transform.position = cur + dir * step;
 
-            yield return wait; // muoviti a cadenza fisica
+            yield return wait;
         }
     }
 
@@ -212,9 +235,9 @@ public class CustomerController : MonoBehaviour
 
         if (value > 0f)
         {
-            TheftLedger.Add(value);                                  // registra perdita
-            WantsToPay = false;                                      // se ruba, non paga
-            speedMul = Mathf.Max(1f, archetype.thiefRunMultiplier);  // scappa più veloce
+            TheftLedger.Add(value);
+            WantsToPay = false;
+            speedMul = Mathf.Max(1f, archetype.thiefRunMultiplier);
         }
     }
 
@@ -236,7 +259,7 @@ public class CustomerController : MonoBehaviour
             Vector2 cur = rb ? rb.position : (Vector2)transform.position;
             Vector2 to = (Vector2)target - cur;
             if (to.sqrMagnitude <= stopSqr) break;
-            if (Time.time >= deadline) break;  // failsafe
+            if (Time.time >= deadline) break;
 
             Vector2 dir = to.normalized;
             float step = Mathf.Abs(archetype.walkSpeed * speedMul) * Time.fixedDeltaTime;
@@ -250,9 +273,12 @@ public class CustomerController : MonoBehaviour
 
     public void Queue_MoveTo(Vector3 pos)
     {
+        if (isExiting) { Debug.Log($"[Customer] IGNORE Queue_MoveTo (exiting) -> {name}"); return; }
         if (moveRoutine != null) StopCoroutine(moveRoutine);
         moveRoutine = StartCoroutine(MoveTo(pos));
     }
+
+
 
     void OnDestroy()
     {
@@ -261,4 +287,39 @@ public class CustomerController : MonoBehaviour
     }
 
     void Log(string m) => Debug.Log($"[Customer:{name}] {m}");
+
+    // --- Decisione d'acquisto (usa StoreAmbience + ShelfState) ---
+    bool DecidePurchase(float archetypeBuyChance, Transform stand)
+    {
+        // trova lo ShelfState sullo stand (o parent/child)
+        ShelfState shelf = null;
+        if (stand)
+        {
+            shelf = stand.GetComponent<ShelfState>()
+                 ?? stand.GetComponentInParent<ShelfState>()
+                 ?? stand.GetComponentInChildren<ShelfState>();
+        }
+
+        // moltiplicatori: globale (pulizia) + locale (ordine/stock)
+        float globalMult = StoreAmbience.I ? StoreAmbience.I.BuyMult : 1f;
+
+        float localMult = 1f;
+        if (shelf)
+        {
+            localMult *= Mathf.Lerp(0.85f, 1.15f, shelf.order);
+            if (shelf.stock == 0) localMult *= 0.6f;
+        }
+
+        bool buy = Random.value < (archetypeBuyChance * globalMult * localMult);
+
+        // feedback sullo scaffale
+        if (shelf)
+        {
+            if (buy) shelf.TakeOne();
+            else shelf.BrowseDamage(0.25f);
+            shelf.Refresh();
+        }
+
+        return buy;
+    }
 }

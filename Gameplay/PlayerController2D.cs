@@ -99,7 +99,7 @@ public class PlayerController2D : MonoBehaviour
         bool holdE = Input.GetKey(interactKey);
         cashCd -= Time.deltaTime;
 
-        bool ready = currentRegister && currentRegister.HasReadyCustomer();
+        bool ready = currentRegister && currentRegister.HasServeableCustomer();
 
         // Entrata/uscita checking (pose mano)
         if (holdToCheck)
