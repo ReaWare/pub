@@ -129,31 +129,48 @@ public class CashRegister : MonoBehaviour
         return d2 <= serveDistance * serveDistance;
     }
 
+    // CashRegister.cs
     void SweepQueueHead()
     {
         bool changed = false;
+
+        // ripulisci solo la testa finché è invalida
         while (queue.Count > 0)
         {
             var c = queue[0];
-            if (!c) { queue.RemoveAt(0); changed = true; continue; }
-
-            int tot = GetCartTotal(c);
-            // se non vuole pagare o ha carrello zero → esci
-            if (!c.WantsToPay || tot <= 0)
+            if (!c)
             {
-                c.ClearCartAndExit();
+                // già distrutto altrove
                 queue.RemoveAt(0);
                 changed = true;
                 continue;
             }
-            break; // il primo è valido → stop
+
+            int tot = GetCartTotal(c);
+
+            // non pagherà mai: mandalo via e togli DOVUNQUE in modo idempotente
+            if (!c.WantsToPay || tot <= 0)
+            {
+                c.ClearCartAndExit();        // può chiamare LeaveQueue() → Remove(c)
+                queue.Remove(c);             // se è ancora in testa, rimuovi; se è già stato tolto: no-op
+                changed = true;
+                continue;
+            }
+
+            // primo valido → stop
+            break;
         }
+
         if (changed) RepositionQueue();
     }
 
 
+
     // alias legacy per codice vecchio
     public bool HasReadyCustomer() => HasServeableCustomer();
+
+
+    public event System.Action OnCheckoutSuccess;
 
     // Incasso
     void DoCheckout()
@@ -181,6 +198,7 @@ public class CashRegister : MonoBehaviour
         RepositionQueue();
 
         isBusy = false;
+        OnCheckoutSuccess?.Invoke();
     }
 
     void RepositionQueue()
@@ -206,6 +224,61 @@ public class CashRegister : MonoBehaviour
             c.Queue_MoveTo(pos);
         }
     }
+
+    // Può parlare con il primo? (nessun pagamento da fare ma è in raggio)
+    public bool HasTalkableHead()
+    {
+        if (queue.Count == 0) return false;
+        var c = queue[0];
+        if (!c) return false;
+
+        // se è servibile (vuole pagare e ha carrello > 0), NON è "parlante"
+        if (c.WantsToPay && GetCartTotal(c) > 0) return false;
+
+        return HeadInRange(c);
+    }
+
+    // Azione primaria: prima prova a incassare, sennò parla
+    public void InteractPrimary()
+    {
+        if (requireProximity && !_playerInRange) { BeepError(); return; }
+        if (interactCooldown > 0f || isBusy) return;
+        interactCooldown = interactCooldownSeconds;
+
+        if (HasServeableCustomer()) { DoCheckout(); return; }
+        if (HasTalkableHead()) { BeginTalk(); return; }
+
+        BeepError();
+    }
+
+    // Placeholder per i dialoghi (per ora solo un log)
+    public void BeginTalk()
+    {
+        var c = (queue.Count > 0) ? queue[0] : null;
+        if (!c) return;
+
+        // Qui in futuro: DialogueSystem.StartConversation(c)
+        Debug.Log($"[Register] TALK with {c.name} (placeholder)");
+    }
+
+    // --- helper distanza “a livello piedi” ---
+    bool HeadInRange(CustomerController c)
+    {
+        Vector2 pCustomer = (Vector2)c.transform.position;
+        var col = c.GetComponent<Collider2D>();
+        if (col) pCustomer = new Vector2(col.bounds.center.x, col.bounds.min.y);
+
+        Vector2 pService = cashierPoint
+            ? (Vector2)cashierPoint.position
+            : (queueSlots != null && queueSlots.Length > 0 ? (Vector2)queueSlots[0].position : pCustomer);
+
+        return (pCustomer - pService).sqrMagnitude <= serveDistance * serveDistance;
+    }
+
+
+
+
+
 
     public void LeaveQueue(CustomerController c)
     {

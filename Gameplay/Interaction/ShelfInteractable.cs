@@ -19,8 +19,13 @@ public class ShelfInteractable : MonoBehaviour, IInteractable
     public void Interact(Interactor who)
     {
         if (cd > 0) return;
-        StoreAmbience.I?.Clean(cleanBoost); // bonus globale
-        shelf?.Tidy(1f);                    // riordino locale
+
+        // pulizia globale
+        StoreAmbience.I?.Clean(cleanBoost);
+
+        // riordino SOLO dell'ordine (non tocca lo stock)
+        shelf?.Tidy(cleanBoost);
+
         cd = cooldown;
     }
 }

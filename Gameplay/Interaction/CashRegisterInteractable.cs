@@ -3,7 +3,6 @@ using UnityEngine;
 [RequireComponent(typeof(Collider2D))]
 public class CashRegisterInteractable : MonoBehaviour, IInteractable
 {
-    [SerializeField] string prompt = "Incassa (E)";
     [SerializeField] CashRegister cashRegister;
 
     void Awake()
@@ -12,15 +11,20 @@ public class CashRegisterInteractable : MonoBehaviour, IInteractable
             cashRegister = GetComponent<CashRegister>() ?? GetComponentInParent<CashRegister>();
     }
 
-    public string Prompt => prompt;
+    public string Prompt
+    {
+        get
+        {
+            if (!cashRegister) return "";
+            if (cashRegister.HasServeableCustomer()) return "Incassa (E)";
+            if (cashRegister.HasTalkableHead()) return "Parla (E)";
+            return "";
+        }
+    }
 
     public bool CanInteract(Interactor who)
-    {
-        return cashRegister && cashRegister.HasServeableCustomer();
-    }
+        => cashRegister && (cashRegister.HasServeableCustomer() || cashRegister.HasTalkableHead());
 
     public void Interact(Interactor who)
-    {
-        cashRegister?.TryCheckout();
-    }
+        => cashRegister?.InteractPrimary();
 }

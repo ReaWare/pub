@@ -83,14 +83,60 @@ public class CustomerController : MonoBehaviour
             // muoviti verso lo stand con un po' di jitter
             Vector3 spot = target.position + (Vector3)(Random.insideUnitCircle * standJitter);
             yield return MoveTo(spot);
+            float linger = Random.Range(archetype.lingerAtStand.x, archetype.lingerAtStand.y);
+            if (linger > 0f) yield return new WaitForSeconds(linger);
+
             yield return new WaitForSeconds(0.4f);
 
-            // chance di prendere un item dal punto visitato (con cleanliness + stato scaffale)
-            var item = target.GetComponentInParent<Item>() ?? target.GetComponentInChildren<Item>();
-            bool buy = DecidePurchase(archetype.buyChance, target);
+            // --- PRENDI 1..N PEZZI, DECIDI SE COMPRARE, ALTRIMENTI RIMETTI (BENE/MALE) ---
+            var shelf = target.GetComponentInParent<ShelfState>() ?? target.GetComponentInChildren<ShelfState>();
+            var itemRef = target.GetComponentInParent<Item>() ?? target.GetComponentInChildren<Item>();
 
-            if (buy && item)
-                Cart.Add(item);
+            // quante prese vuole fare su questo stand (da archetipo)
+            int want = Mathf.Clamp(Random.Range(archetype.takePerStand.x, archetype.takePerStand.y + 1), 1, 8);
+
+            // prendi davvero (limitato dallo stock dello stand)
+            int taken = 0;
+            for (int k = 0; k < want; k++)
+                if (shelf != null && shelf.TakeOne())
+                    taken++;
+
+            // probabilità effettiva di acquisto (cleanliness globale + ordine locale)
+            float globalMult = StoreAmbience.I ? StoreAmbience.I.BuyMult : 1f;
+            float localMult = (shelf ? Mathf.Lerp(0.85f, 1.15f, shelf.order) : 1f);
+            float effective = archetype.buyChance * globalMult * localMult;
+
+            // esito: compra tutti quelli presi oppure li rimette
+            bool willBuy = (taken > 0) && (Random.value <= effective);
+
+            if (willBuy && itemRef)
+            {
+                for (int k = 0; k < taken; k++)
+                    Cart.Add(itemRef); // aggiunge N pezzi al carrello
+            }
+            else
+            {
+                // NON compra → rimette: bene o male in base a "neatness"
+                bool tidy = (Random.value < archetype.neatness);
+                for (int k = 0; k < taken; k++)
+                    shelf?.PutBack(tidy);
+
+                if (!tidy)
+                {
+                    shelf?.BrowseDamage(0.25f);     // visivamente più disordine
+                    StoreAmbience.I?.Dirty(0.02f);  // negozio più sporco
+                }
+            }
+
+            // se non ha preso nulla, ha comunque "rovistato"
+            if (taken == 0)
+            {
+                shelf?.BrowseDamage(0.15f);
+                StoreAmbience.I?.Dirty(0.01f);
+            }
+
+            shelf?.Refresh();
+
         }
 
         // --- KLEPTO: decide di rubare? ---
@@ -194,7 +240,9 @@ public class CustomerController : MonoBehaviour
             if (to.sqrMagnitude <= stopSqr) break;
 
             Vector2 dir = to.normalized;
-            float step = Mathf.Abs(archetype.walkSpeed * speedMul) * Time.fixedDeltaTime;
+            float baseSpeed = Mathf.Max(0.05f, archetype.walkSpeed);   // niente numeri negativi
+            float step = baseSpeed * speedMul * Time.fixedDeltaTime;
+
 
             if (rb) rb.MovePosition(cur + dir * step);
             else transform.position = cur + dir * step;
@@ -262,7 +310,9 @@ public class CustomerController : MonoBehaviour
             if (Time.time >= deadline) break;
 
             Vector2 dir = to.normalized;
-            float step = Mathf.Abs(archetype.walkSpeed * speedMul) * Time.fixedDeltaTime;
+            float baseSpeed = Mathf.Max(0.05f, archetype.walkSpeed);   // niente numeri negativi
+            float step = baseSpeed * speedMul * Time.fixedDeltaTime;
+
 
             if (rb) rb.MovePosition(cur + dir * step);
             else transform.position = cur + dir * step;

@@ -1,4 +1,4 @@
-﻿using UnityEngine;
+using UnityEngine;
 
 [RequireComponent(typeof(Rigidbody2D))]
 [RequireComponent(typeof(Animator))]
@@ -138,31 +138,24 @@ public class PlayerController2D : MonoBehaviour
         }
 
         // Tentativo incasso (chiama sempre la cassa; antispam con cashCd)
+        // NON chiamiamo più la cassa da qui: lo fa l'Interactor.
+        // Qui teniamo solo cooldown e (se vuoi) la posa.
+
         if (isChecking && inRegisterZone && currentRegister)
         {
             if (pressE || (holdToCheck && holdE && cashCd <= 0f))
             {
-                bool ok = currentRegister.TryCheckout(); // beep singolo se non pronto
+                // nessuna chiamata a TryCheckout qui
                 cashCd = cashRepeat;
-
-                if (ok)
-                {
-                    // 🔧 NEW: spara la one-shot d'animazione e tieni la posa brevemente
-                    if (anim && !string.IsNullOrEmpty(checkoutTrigger))
-                        anim.SetTrigger(checkoutTrigger);
-
-                    checkoutAnimLockUntil = Time.time + postCheckoutHold;
-
-                    if (autoUncheckOnSuccess) pendingAutoUncheck = true;
-                }
+                // niente animazione condizionata a "ok" (non la conosciamo qui)
             }
         }
         else if (!isChecking && inRegisterZone && pressE && currentRegister && cashCd <= 0f)
         {
-            // Se non in posa e non pronto: premendo E ottieni beep singolo, senza alzare la mano
-            currentRegister.TryCheckout();
+            // nessuna chiamata a TryCheckout qui
             cashCd = cashRepeat;
         }
+
 
         // 🔧 NEW: se richiesto, abbassa la mano automaticamente dopo il breve lock
         if (pendingAutoUncheck && Time.time >= checkoutAnimLockUntil)
@@ -220,8 +213,12 @@ public class PlayerController2D : MonoBehaviour
             registerContacts++;
             inRegisterZone = registerContacts > 0;
             // prendi la cassa solo la prima volta che entri
+
             if (currentRegister == null)
+            {
                 currentRegister = other.GetComponentInParent<CashRegister>();
+                if (currentRegister) currentRegister.OnCheckoutSuccess += OnRegisterCheckoutSuccess;
+            }
         }
         if (other.CompareTag(lampTag)) inLampZone = true;
     }
@@ -234,6 +231,7 @@ public class PlayerController2D : MonoBehaviour
             inRegisterZone = registerContacts > 0;
             if (!inRegisterZone)
             {
+                currentRegister.OnCheckoutSuccess -= OnRegisterCheckoutSuccess;
                 currentRegister = null;
                 SetChecking(false);
                 checkoutAnimLockUntil = -1f;
@@ -241,6 +239,16 @@ public class PlayerController2D : MonoBehaviour
             }
         }
         if (other.CompareTag(lampTag)) { inLampZone = false; SetSmoking(false); }
+    }
+
+
+    void OnRegisterCheckoutSuccess()
+    {
+        if (anim && !string.IsNullOrEmpty(checkoutTrigger))
+            anim.SetTrigger(checkoutTrigger);
+
+        checkoutAnimLockUntil = Time.time + postCheckoutHold;
+        if (autoUncheckOnSuccess) pendingAutoUncheck = true;
     }
 
 
